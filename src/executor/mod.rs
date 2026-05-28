@@ -87,15 +87,15 @@ pub async fn run(
 
     // ── Spawn blocking PTY thread ────────────────────────────────
     let _thread = std::thread::spawn(move || {
-        let outcome = run_pty_blocking(
+        run_pty_blocking(
             &command,
             &args,
             cwd.as_deref(),
             env.as_ref(),
             data_tx,
             child_holder_th,
+            result_holder_th,
         );
-        *result_holder_th.lock().unwrap() = Some(outcome);
     });
 
     // ── Forward streamed data; honour optional timeout ───────────
@@ -159,17 +159,22 @@ fn run_pty_blocking(
     env: Option<&HashMap<String, String>>,
     data_tx: mpsc::UnboundedSender<String>,
     child_holder: Arc<Mutex<Option<Box<dyn portable_pty::Child + Send>>>>,
-) -> PtyResult {
+    result_holder: Arc<Mutex<Option<PtyResult>>>,
+) {
+    let mut finish = |r: PtyResult| {
+        *result_holder.lock().unwrap() = Some(r);
+    };
+
     // ── Open PTY ───────────────────────────────────────────────
     let pty_system = native_pty_system();
     let pair = match pty_system.openpty(PtySize::default()) {
         Ok(p) => p,
         Err(e) => {
-            return PtyResult {
+            return finish(PtyResult {
                 output: format!("Failed to open PTY: {}", e),
                 exit_code: -1,
                 signal: None,
-            };
+            });
         }
     };
 
@@ -189,11 +194,11 @@ fn run_pty_blocking(
     let child = match pair.slave.spawn_command(cmd) {
         Ok(c) => c,
         Err(e) => {
-            return PtyResult {
+            return finish(PtyResult {
                 output: format!("Failed to spawn \"{}\": {}", command, e),
                 exit_code: -1,
                 signal: None,
-            };
+            });
         }
     };
 
@@ -206,11 +211,11 @@ fn run_pty_blocking(
     let mut reader = match pair.master.try_clone_reader() {
         Ok(r) => r,
         Err(e) => {
-            return PtyResult {
+            return finish(PtyResult {
                 output: format!("Failed to clone master reader: {}", e),
                 exit_code: -1,
                 signal: None,
-            };
+            });
         }
     };
 
@@ -220,16 +225,15 @@ fn run_pty_blocking(
 
     loop {
         match reader.read(&mut buf) {
-            Ok(0) => break, // EOF — child exited
+            Ok(0) => break,
             Ok(n) => {
                 let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
                 output.push_str(&chunk);
-                // If the async side dropped the receiver, stop reading.
                 if data_tx.send(chunk).is_err() {
                     break;
                 }
             }
-            Err(_) => break, // I/O error (e.g. EIO after kill) — treat as EOF
+            Err(_) => break,
         }
     }
 
@@ -241,16 +245,15 @@ fn run_pty_blocking(
             Err(_) => (0, None),
         },
         None => {
-            // Child was taken by the timeout path and killed.
             (-1, None)
         }
     };
 
-    PtyResult {
+    finish(PtyResult {
         output,
         exit_code,
         signal,
-    }
+    })
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
