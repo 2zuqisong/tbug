@@ -147,9 +147,9 @@ pub fn read_last_error() -> String {
 }
 
 /// Bootstrap tbug: create the home directory, then inject shell hooks.
-pub fn init() -> Result<()> {
+pub fn init(cfg: &crate::config::AppConfig) -> Result<()> {
     let home = get_tbug_home();
-    println!("tbug home directory: {}", home.display());
+    println!("{} {}", cfg.msg_init_home(), home.display());
 
     let home_path = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()));
 
@@ -157,7 +157,7 @@ pub fn init() -> Result<()> {
     inject_hook_to_file(&home_path.join(".bashrc"), BASH_HOOK_SCRIPT)?;
     inject_hook_to_file(&home_path.join(".config/fish/config.fish"), FISH_HOOK_SCRIPT)?;
 
-    println!("tbug initialized successfully.");
+    println!("✔ {}", cfg.msg_init_ok());
     Ok(())
 }
 

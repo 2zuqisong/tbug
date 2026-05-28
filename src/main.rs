@@ -1,5 +1,6 @@
 mod agent;
 mod client;
+mod config;
 mod executor;
 mod integration;
 mod tools;
@@ -34,8 +35,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize tbug configuration in the current environment.
+    /// Initialize tbug shell hooks and configuration.
     Init,
+    /// Switch global interaction language (zh / en).
+    Config,
 }
 
 #[tokio::main]
@@ -45,14 +48,21 @@ async fn main() {
     // Load .env, overriding shell env (matches TS precedence).
     client::load_env();
 
+    // Load persisted config (defaults to language=zh).
+    let cfg = config::AppConfig::load();
+
     // Subcommand dispatch
     if let Some(sub) = cli.subcommand {
         match sub {
             Commands::Init => {
-                if let Err(e) = integration::init() {
+                if let Err(e) = integration::init(&cfg) {
                     eprintln!("init failed: {}", e);
                     process::exit(1);
                 }
+                return;
+            }
+            Commands::Config => {
+                run_config(&cfg);
                 return;
             }
         }
@@ -61,12 +71,13 @@ async fn main() {
     // No subcommand — dispatch by argument pattern
     match cli.command {
         Some(cmd) => {
-            if cli.args.is_empty() {
-                // Single-word command (e.g. `tbug make`) — direct agent mode
+            if cli.args.is_empty() && !is_natural_language(&cmd) {
+                // Single ASCII word (e.g. `tbug make`) — direct agent mode
                 if let Err(e) = agent::run_agent(agent::AgentOptions {
                     command: cmd,
                     args: vec![],
                     max_iterations: cli.max_iterations,
+                    language: cfg.language.clone(),
                 })
                 .await
                 {
@@ -74,9 +85,13 @@ async fn main() {
                     process::exit(1);
                 }
             } else {
-                // Multi-word input (e.g. `tbug 杀死 8080 端口`) — copilot mode
-                let intent = format!("{} {}", cmd, cli.args.join(" "));
-                let command = match agent::run_copilot(&intent).await {
+                // Multi-word OR non-ASCII — copilot mode
+                let intent = if cli.args.is_empty() {
+                    cmd
+                } else {
+                    format!("{} {}", cmd, cli.args.join(" "))
+                };
+                let command = match agent::run_copilot(&intent, &cfg.language).await {
                     Ok(c) => c,
                     Err(e) => {
                         eprintln!("Copilot error: {}", e);
@@ -84,13 +99,10 @@ async fn main() {
                     }
                 };
 
-                // ── Safety gate ─────────────────────────────────
-                if !confirm_execution(&command) {
-                    println!("操作已取消");
+                if !confirm_execution(&command, &cfg) {
+                    println!("{}", cfg.msg_cancelled());
                     process::exit(0);
                 }
-
-                // ── Native shell execution ──────────────────────
                 let status = execute_shell(&command);
                 process::exit(status.code().unwrap_or(1));
             }
@@ -102,6 +114,7 @@ async fn main() {
                     let ctx = agent::DiagnosisContext {
                         last_cmd: cmd,
                         error_text: integration::read_last_error(),
+                        language: cfg.language.clone(),
                     };
                     if let Err(e) =
                         agent::run_diagnosis(ctx, cli.max_iterations).await
@@ -111,9 +124,7 @@ async fn main() {
                     }
                 }
                 None => {
-                    println!(
-                        "当前无失败命令上下文。请使用 'tb <需求描述>' 开启 Copilot 模式。"
-                    );
+                    println!("{}", cfg.msg_no_context());
                     process::exit(0);
                 }
             }
@@ -121,28 +132,50 @@ async fn main() {
     }
 }
 
+// ── Subcommand handlers ────────────────────────────────────────────
+
+fn run_config(cfg: &config::AppConfig) {
+    let default_idx = if cfg.language == "en" { 1 } else { 0 };
+    let selection = dialoguer::Select::new()
+        .with_prompt(cfg.msg_select_language())
+        .items(config::AppConfig::language_options())
+        .default(default_idx)
+        .interact()
+        .unwrap_or(default_idx);
+
+    let new_lang = if selection == 1 { "en" } else { "zh" };
+    let mut updated = cfg.clone();
+    updated.language = new_lang.to_string();
+
+    if let Err(e) = updated.save() {
+        eprintln!("Failed to save config: {}", e);
+        process::exit(1);
+    }
+
+    println!("✔ {}", updated.msg_config_updated());
+}
+
 // ── Copilot helpers ──────────────────────────────────────────────────
 
-/// Display the generated command and ask the user for execution
-/// authorization via `dialoguer::Confirm`.  Returns `true` on `y`.
-fn confirm_execution(command: &str) -> bool {
+fn is_natural_language(s: &str) -> bool {
+    s.chars().any(|c| !c.is_ascii())
+}
+
+fn confirm_execution(command: &str, cfg: &config::AppConfig) -> bool {
     println!();
-    println!("🤖 [TBug] 智能体为您生成的系统命令如下：");
+    println!("🤖 {}", cfg.msg_copilot_header());
     println!("👉 {}", command);
     println!();
-    println!("⚠️  警告：该命令将直接在您的宿主操作系统中运行！");
+    println!("⚠️  {}", cfg.msg_copilot_warning());
     println!();
 
     dialoguer::Confirm::new()
-        .with_prompt("是否授权自动运行该命令?")
+        .with_prompt(cfg.msg_copilot_authorize())
         .default(false)
         .interact()
         .unwrap_or(false)
 }
 
-/// Run `cmd` under the user's login shell (`$SHELL` or `sh` fallback)
-/// with `-c`, inheriting stdout and stderr so native ANSI colors,
-/// progress bars, and error messages pass through untouched.
 fn execute_shell(cmd: &str) -> std::process::ExitStatus {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
     Command::new(&shell)

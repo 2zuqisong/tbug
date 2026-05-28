@@ -40,7 +40,7 @@ fn parse_previews(patch: &str) -> Vec<BlockPreview> {
 ///
 /// Uses `dialoguer::Confirm` for the y/n prompt.
 /// Returns `true` if the user answered `y` / `yes`.
-pub fn ask_user_confirmation(patch_args: &serde_json::Value) -> bool {
+pub fn ask_user_confirmation(patch_args: &serde_json::Value, language: &str) -> bool {
     let path = patch_args
         .get("path")
         .and_then(|v| v.as_str())
@@ -84,8 +84,14 @@ pub fn ask_user_confirmation(patch_args: &serde_json::Value) -> bool {
     // Flush stdout so box is visible before dialoguer prompt.
     let _ = std::io::stdout().flush();
 
+    let prompt = if language == "en" {
+        "Do you want to apply this patch?"
+    } else {
+        "Apply this change?"
+    };
+
     dialoguer::Confirm::new()
-        .with_prompt("Apply this change?")
+        .with_prompt(prompt)
         .default(false)
         .interact()
         .unwrap_or(false)

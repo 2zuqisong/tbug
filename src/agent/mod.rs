@@ -5,6 +5,7 @@ use anyhow::Result;
 use crate::client::{
     self, ChatMessage, ChatOptions, ChatStreamEvent, FunctionCall, ToolCall, ToolDefinition,
 };
+use crate::config;
 use crate::executor;
 use crate::tools;
 use crate::utils::ui;
@@ -20,6 +21,8 @@ pub struct AgentOptions {
     pub args: Vec<String>,
     /// Maximum ReAct iterations before giving up.  Defaults to 10.
     pub max_iterations: usize,
+    /// UI language: `"zh"` or `"en"`.
+    pub language: String,
 }
 
 /// Context collected by the bare-`tb` diagnosis flow.
@@ -28,6 +31,8 @@ pub struct DiagnosisContext {
     pub last_cmd: String,
     /// ANSI error capture from `~/.tbug/last_error.ansi` (may be empty).
     pub error_text: String,
+    /// UI language: `"zh"` or `"en"`.
+    pub language: String,
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -49,18 +54,6 @@ fn build_user_message(command: &str, args: &[String], output: &str, iteration: u
             full, output
         )
     }
-}
-
-fn build_diagnosis_prompt(last_cmd: &str, error_text: &str) -> String {
-    format!(
-        "用户刚刚运行了命令：`{}`\n\
-         该命令崩溃并抛出了以下终端错误树：\n\
-         ```text\n\
-         {}\n\
-         ```\n\
-         请利用你的工具链分析该现场，并尝试修复。",
-        last_cmd, error_text
-    )
 }
 
 /// Crude shell-parse: first word is the command, rest are args.
@@ -107,19 +100,18 @@ fn tool_info_to_tool_calls(
 // ── Shared ReAct core ──────────────────────────────────────────────
 
 /// Inner loop shared by both `run_agent` and `run_diagnosis`.
-///
-/// * `messages`  — conversation history, must already contain the system
-///   prompt and first user message.
-/// * `command` / `args` — the original failing command used for re-verification.
-/// * `working_dir` — CWD captured at startup.
-/// * `max_iterations` — upper bound on LLM round-trips.
 async fn run_react_loop(
     mut messages: Vec<ChatMessage>,
     command: String,
     args: Vec<String>,
     working_dir: Option<String>,
     max_iterations: usize,
+    language: &str,
 ) -> Result<()> {
+    let cfg = config::AppConfig {
+        language: language.to_string(),
+    };
+
     for i in 0..max_iterations {
         print_separator(&format!("Agent iteration {}/{}", i + 1, max_iterations));
 
@@ -168,9 +160,10 @@ async fn run_react_loop(
 
                 // Edit-Gate: confirm before destructive file writes
                 if tc.name == "patch_file" {
-                    let confirmed = ui::ask_user_confirmation(&tc.arguments);
+                    let confirmed =
+                        ui::ask_user_confirmation(&tc.arguments, language);
                     if !confirmed {
-                        println!("  ⏭  Skipped (user declined).");
+                        println!("  ⏭  {}", cfg.msg_user_declined());
                         messages.push(ChatMessage::tool(
                             &tc.id,
                             "User rejected this patch. Please try a different approach.",
@@ -214,7 +207,7 @@ async fn run_react_loop(
         .await?;
 
         if pty_result.exit_code == 0 {
-            println!("\n🎉 编译/运行通过！Bug 已成功降伏。");
+            println!("\n🎉 {}", cfg.msg_bug_fixed());
             return Ok(());
         }
 
@@ -226,13 +219,7 @@ async fn run_react_loop(
         )));
     }
 
-    println!(
-        "\n⚠ Max iterations ({}) reached. The issue may still be present.",
-        max_iterations
-    );
-    println!(
-        "  Review the changes and try running tbug again, or fix the remaining issues manually."
-    );
+    println!("\n⚠ {}", cfg.msg_max_iterations(max_iterations));
 
     Ok(())
 }
@@ -240,14 +227,17 @@ async fn run_react_loop(
 // ── Public entry points ────────────────────────────────────────────
 
 /// Entry point for `tbug <command> [args...]`.
-///
-/// Runs the command once via PTY; if it succeeds there is nothing to do.
-/// Otherwise feeds the error into the ReAct loop.
 pub async fn run_agent(options: AgentOptions) -> Result<()> {
+    let cfg = config::AppConfig {
+        language: options.language.clone(),
+    };
+    let language = options.language.clone();
+
     let AgentOptions {
         command,
         args,
         max_iterations,
+        ..
     } = options;
 
     let working_dir = std::env::current_dir()
@@ -270,23 +260,27 @@ pub async fn run_agent(options: AgentOptions) -> Result<()> {
     .await?;
 
     if pty_result.exit_code == 0 {
-        println!("\n✓ Command succeeded. Nothing to debug.");
+        println!("\n✓ {}", cfg.msg_nothing_to_debug());
         return Ok(());
     }
 
+    let system_msg = format!("{}{}", SYSTEM_PROMPT, cfg.language_constraint());
+
     let messages = vec![
-        ChatMessage::system(SYSTEM_PROMPT),
+        ChatMessage::system(&system_msg),
         ChatMessage::user(&build_user_message(&command, &args, &pty_result.output, 0)),
     ];
 
-    run_react_loop(messages, command, args, working_dir, max_iterations).await
+    run_react_loop(messages, command, args, working_dir, max_iterations, &language).await
 }
 
 /// Entry point for bare `tb` (diagnosis mode).
-///
-/// Reads the last failed command and error capture, builds the diagnosis
-/// prompt, then launches the ReAct loop for iterative fixing.
 pub async fn run_diagnosis(ctx: DiagnosisContext, max_iterations: usize) -> Result<()> {
+    let cfg = config::AppConfig {
+        language: ctx.language.clone(),
+    };
+    let language = ctx.language.clone();
+
     let (command, args) = parse_command_line(&ctx.last_cmd);
 
     let working_dir = std::env::current_dir()
@@ -299,27 +293,41 @@ pub async fn run_diagnosis(ctx: DiagnosisContext, max_iterations: usize) -> Resu
         args.join(" ")
     ));
 
-    let prompt = build_diagnosis_prompt(&ctx.last_cmd, &ctx.error_text);
+    let prompt = cfg.diagnosis_prompt(&ctx.last_cmd, &ctx.error_text);
+    let system_msg = format!("{}{}", SYSTEM_PROMPT, cfg.language_constraint());
 
     let messages = vec![
-        ChatMessage::system(SYSTEM_PROMPT),
+        ChatMessage::system(&system_msg),
         ChatMessage::user(&prompt),
     ];
 
-    run_react_loop(messages, command, args, working_dir, max_iterations).await
+    run_react_loop(messages, command, args, working_dir, max_iterations, &language).await
 }
 
 /// Copilot mode: translate a natural-language intent into a clean shell
 /// command using a strict one-shot LLM call.
-///
-/// No tools are provided and no streaming output is displayed — the model
-/// must return exactly the command string, which is `.trim()`-ed before
-/// being returned.
-pub async fn run_copilot(intent: &str) -> Result<String> {
+pub async fn run_copilot(intent: &str, language: &str) -> Result<String> {
+    let cfg = config::AppConfig {
+        language: language.to_string(),
+    };
+
+    // Append language constraint to the copilot system prompt.
+    let copilot_prompt = if language == "en" {
+        format!(
+            "{}\n\nADDITIONAL RULE: If you must include any explanatory text \
+             (which you should not), it MUST be in English.",
+            COPILOT_SYSTEM_PROMPT
+        )
+    } else {
+        COPILOT_SYSTEM_PROMPT.to_string()
+    };
+
     let messages = vec![
-        ChatMessage::system(COPILOT_SYSTEM_PROMPT),
+        ChatMessage::system(&copilot_prompt),
         ChatMessage::user(intent),
     ];
+
+    let _ = cfg; // used if we add more language-specific behaviour
 
     let response = client::get_default_client()
         .chat_stream(
