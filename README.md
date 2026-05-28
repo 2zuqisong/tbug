@@ -1,6 +1,6 @@
 ```markdown
  _____ ____
-|_   _| __ ) _   _  __ _ 
+|_   _| __ ) _   _  __ _
   | | |  _ \| | | |/ _` |
   | | | |_) | |_| | (_| |
   |_| |____/ \__,_|\__, |
@@ -8,8 +8,9 @@
 
 ```
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js Version](https://img.shields.io/badge/node-%3E%3D%2020.0.0-brightgreen.svg)](https://nodejs.org/)
+[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](https://www.rust-lang.org/)
 [![LLM: DeepSeek V4](https://img.shields.io/badge/LLM-DeepSeek%20V4-blue.svg)](https://platform.deepseek.com)
+
 ---
 
 ## 🚀 Quick Start
@@ -18,8 +19,7 @@
 
 ```bash
 git clone <repo-url> && cd tbug
-npm install
-npm run build
+cargo build --release
 
 ```
 
@@ -38,13 +38,12 @@ Point tbug at any local project you're working on, from any directory:
 
 ```bash
 # Have tbug tame a broken Rust project
-node /path/to/tbug/dist/main.js cargo check
+tbug cargo check --manifest-path /path/to/project/Cargo.toml
 
 # Have tbug diagnose a failing Node.js test suite
-node /path/to/tbug/dist/main.js npm run test
+tbug npm run test
 
-# Or register it as a global system command via npm link
-npm link
+# Have tbug fix a broken Makefile build
 tbug make
 
 ```
@@ -58,7 +57,7 @@ tbug make
 | `DEEPSEEK_API_KEY` | **Yes** | — | Your DeepSeek platform API key (official or proxy) |
 | `DEEPSEEK_API_BASE` | No | `https://api.deepseek.com/v1` | Override the API endpoint for private deployments or third-party proxies |
 
-> 💡 **Note**: Configuration uses three-tier priority resolution: constructor parameter → `.env` file → shell environment. `.env` values take highest precedence.
+> 💡 **Note**: Configuration uses three-tier priority resolution: `.env` file → shell environment → constructor parameter. `.env` values take highest precedence.
 
 ---
 
