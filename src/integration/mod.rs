@@ -116,6 +116,36 @@ pub fn inject_hook_to_file(config_path: &Path, hook_content: &str) -> Result<()>
     Ok(())
 }
 
+/// Read the last failed command from `$HOME/.tbug/last_cmd.log`.
+///
+/// Returns `None` when the file is missing or its content is empty / blank.
+pub fn read_last_command() -> Option<String> {
+    let path = get_tbug_home().join("last_cmd.log");
+    match fs::read_to_string(&path) {
+        Ok(content) => {
+            let trimmed = content.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+/// Read the last error ANSI capture from `$HOME/.tbug/last_error.ansi`.
+///
+/// Raw bytes are preserved so ANSI escape sequences survive the round-trip.
+/// Returns an empty string when the file does not exist.
+pub fn read_last_error() -> String {
+    let path = get_tbug_home().join("last_error.ansi");
+    match fs::read(&path) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(_) => String::new(),
+    }
+}
+
 /// Bootstrap tbug: create the home directory, then inject shell hooks.
 pub fn init() -> Result<()> {
     let home = get_tbug_home();

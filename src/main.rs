@@ -36,6 +36,18 @@ enum Commands {
     Init,
 }
 
+pub fn build_diagnosis_prompt(last_cmd: &str, error_text: &str) -> String {
+    format!(
+        "用户刚刚运行了命令：`{}`\n\
+         该命令崩溃并抛出了以下终端错误树：\n\
+         ```text\n\
+         {}\n\
+         ```\n\
+         请利用你的工具链分析该现场，并尝试修复。",
+        last_cmd, error_text
+    )
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -71,10 +83,20 @@ async fn main() {
             }
         }
         None => {
-            eprintln!("Error diagnosis mode is not yet implemented.");
-            eprintln!("Usage: tbug <command> [args...]");
-            eprintln!("       tbug init");
-            std::process::exit(1);
+            // Bare `tb` — environment diagnosis mode
+            match integration::read_last_command() {
+                Some(cmd) => {
+                    let error_text = integration::read_last_error();
+                    let prompt = build_diagnosis_prompt(&cmd, &error_text);
+                    println!("{}", prompt);
+                }
+                None => {
+                    println!(
+                        "当前无失败命令上下文。请使用 'tb <需求描述>' 开启 Copilot 模式。"
+                    );
+                    std::process::exit(0);
+                }
+            }
         }
     }
 }
