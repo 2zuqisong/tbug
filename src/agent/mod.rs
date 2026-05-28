@@ -9,7 +9,7 @@ use crate::executor;
 use crate::tools;
 use crate::utils::ui;
 
-use prompt::SYSTEM_PROMPT;
+use prompt::{COPILOT_SYSTEM_PROMPT, SYSTEM_PROMPT};
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -307,4 +307,41 @@ pub async fn run_diagnosis(ctx: DiagnosisContext, max_iterations: usize) -> Resu
     ];
 
     run_react_loop(messages, command, args, working_dir, max_iterations).await
+}
+
+/// Copilot mode: translate a natural-language intent into a clean shell
+/// command using a strict one-shot LLM call.
+///
+/// No tools are provided and no streaming output is displayed — the model
+/// must return exactly the command string, which is `.trim()`-ed before
+/// being returned.
+pub async fn run_copilot(intent: &str) -> Result<String> {
+    let messages = vec![
+        ChatMessage::system(COPILOT_SYSTEM_PROMPT),
+        ChatMessage::user(intent),
+    ];
+
+    let response = client::get_default_client()
+        .chat_stream(
+            &messages,
+            None,
+            |_| {}, // silent — only interested in the final content
+        )
+        .await?;
+
+    let raw = response.content.trim().to_string();
+
+    // Strip common markdown fence leftovers in case the model disobeyed.
+    let cleaned = raw
+        .strip_prefix("```bash")
+        .or_else(|| raw.strip_prefix("```sh"))
+        .or_else(|| raw.strip_prefix("```shell"))
+        .or_else(|| raw.strip_prefix("```"))
+        .unwrap_or(&raw)
+        .strip_suffix("```")
+        .unwrap_or(&raw)
+        .trim()
+        .to_string();
+
+    Ok(cleaned)
 }

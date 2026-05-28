@@ -56,18 +56,33 @@ async fn main() {
         }
     }
 
-    // No subcommand — run the agent
+    // No subcommand — dispatch by argument pattern
     match cli.command {
         Some(cmd) => {
-            if let Err(e) = agent::run_agent(agent::AgentOptions {
-                command: cmd,
-                args: cli.args,
-                max_iterations: cli.max_iterations,
-            })
-            .await
-            {
-                eprintln!("Fatal error: {}", e);
-                std::process::exit(1);
+            if cli.args.is_empty() {
+                // Single-word command (e.g. `tbug make`) — direct agent mode
+                if let Err(e) = agent::run_agent(agent::AgentOptions {
+                    command: cmd,
+                    args: vec![],
+                    max_iterations: cli.max_iterations,
+                })
+                .await
+                {
+                    eprintln!("Fatal error: {}", e);
+                    std::process::exit(1);
+                }
+            } else {
+                // Multi-word input (e.g. `tbug 杀死 8080 端口`) — copilot mode
+                let intent = format!("{} {}", cmd, cli.args.join(" "));
+                match agent::run_copilot(&intent).await {
+                    Ok(command) => {
+                        println!("{}", command);
+                    }
+                    Err(e) => {
+                        eprintln!("Copilot error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
             }
         }
         None => {
