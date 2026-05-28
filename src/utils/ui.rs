@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, Write};
+use std::io::Write;
 
 /// Parse SEARCH / REPLACE sections from a patch string for display.
 struct BlockPreview {
@@ -38,6 +38,7 @@ fn parse_previews(patch: &str) -> Vec<BlockPreview> {
 /// Display a SEARCH/REPLACE diff preview and ask the user for
 /// confirmation before a destructive file write.
 ///
+/// Uses `dialoguer::Confirm` for the y/n prompt.
 /// Returns `true` if the user answered `y` / `yes`.
 pub fn ask_user_confirmation(patch_args: &serde_json::Value) -> bool {
     let path = patch_args
@@ -79,18 +80,15 @@ pub fn ask_user_confirmation(patch_args: &serde_json::Value) -> bool {
         }
     }
     println!("└──────────────────────────────────────────┘");
-    println!("Apply this change? (y/n)");
-    print!("> ");
-    let _ = io::stdout().flush();
 
-    let mut line = String::new();
-    let stdin = io::stdin();
-    if stdin.lock().read_line(&mut line).is_ok() {
-        let answer = line.trim().to_lowercase();
-        answer == "y" || answer == "yes"
-    } else {
-        false
-    }
+    // Flush stdout so box is visible before dialoguer prompt.
+    let _ = std::io::stdout().flush();
+
+    dialoguer::Confirm::new()
+        .with_prompt("Apply this change?")
+        .default(false)
+        .interact()
+        .unwrap_or(false)
 }
 
 fn truncate(s: &str, max: usize) -> String {

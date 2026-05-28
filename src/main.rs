@@ -36,18 +36,6 @@ enum Commands {
     Init,
 }
 
-pub fn build_diagnosis_prompt(last_cmd: &str, error_text: &str) -> String {
-    format!(
-        "用户刚刚运行了命令：`{}`\n\
-         该命令崩溃并抛出了以下终端错误树：\n\
-         ```text\n\
-         {}\n\
-         ```\n\
-         请利用你的工具链分析该现场，并尝试修复。",
-        last_cmd, error_text
-    )
-}
-
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -86,9 +74,16 @@ async fn main() {
             // Bare `tb` — environment diagnosis mode
             match integration::read_last_command() {
                 Some(cmd) => {
-                    let error_text = integration::read_last_error();
-                    let prompt = build_diagnosis_prompt(&cmd, &error_text);
-                    println!("{}", prompt);
+                    let ctx = agent::DiagnosisContext {
+                        last_cmd: cmd,
+                        error_text: integration::read_last_error(),
+                    };
+                    if let Err(e) =
+                        agent::run_diagnosis(ctx, cli.max_iterations).await
+                    {
+                        eprintln!("Fatal error: {}", e);
+                        std::process::exit(1);
+                    }
                 }
                 None => {
                     println!(
