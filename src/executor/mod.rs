@@ -33,6 +33,7 @@ pub struct PtyResult {
     /// Process exit code. `-1` when the process was killed by timeout.
     pub exit_code: i32,
     /// Signal number if the process was terminated by a signal.
+    #[allow(dead_code)]
     pub signal: Option<i32>,
 }
 
@@ -161,7 +162,7 @@ fn run_pty_blocking(
     child_holder: Arc<Mutex<Option<Box<dyn portable_pty::Child + Send>>>>,
     result_holder: Arc<Mutex<Option<PtyResult>>>,
 ) {
-    let mut finish = |r: PtyResult| {
+    let finish = |r: PtyResult| {
         *result_holder.lock().unwrap() = Some(r);
     };
 

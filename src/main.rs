@@ -47,7 +47,10 @@ async fn main() {
     if let Some(sub) = cli.subcommand {
         match sub {
             Commands::Init => {
-                integration::init();
+                if let Err(e) = integration::init() {
+                    eprintln!("init failed: {}", e);
+                    std::process::exit(1);
+                }
                 return;
             }
         }

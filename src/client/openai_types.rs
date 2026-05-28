@@ -105,6 +105,7 @@ pub struct FunctionDef {
 ///
 /// Serializes as `"auto"`, `"none"`, or `{"type":"function","function":{"name":"..."}}`.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum ToolChoice {
     Auto,
     None,

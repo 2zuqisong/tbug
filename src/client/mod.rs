@@ -312,6 +312,7 @@ pub fn get_default_client() -> &'static LLMClient {
 }
 
 /// Convenience function that calls through to the default client.
+#[allow(dead_code)]
 pub async fn chat_stream(
     messages: &[ChatMessage],
     options: Option<&ChatOptions>,

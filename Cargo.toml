@@ -9,6 +9,9 @@ license = "MIT"
 name = "tbug"
 path = "src/main.rs"
 
+[dev-dependencies]
+tempfile = "3"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["stream", "json"] }
