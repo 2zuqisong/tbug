@@ -5,6 +5,8 @@ mod integration;
 mod tools;
 mod utils;
 
+use std::process::{self, Command, Stdio};
+
 use clap::{Parser, Subcommand};
 
 /// tbug — AI-powered autonomous debugging assistant.
@@ -49,7 +51,7 @@ async fn main() {
             Commands::Init => {
                 if let Err(e) = integration::init() {
                     eprintln!("init failed: {}", e);
-                    std::process::exit(1);
+                    process::exit(1);
                 }
                 return;
             }
@@ -69,20 +71,28 @@ async fn main() {
                 .await
                 {
                     eprintln!("Fatal error: {}", e);
-                    std::process::exit(1);
+                    process::exit(1);
                 }
             } else {
                 // Multi-word input (e.g. `tbug 杀死 8080 端口`) — copilot mode
                 let intent = format!("{} {}", cmd, cli.args.join(" "));
-                match agent::run_copilot(&intent).await {
-                    Ok(command) => {
-                        println!("{}", command);
-                    }
+                let command = match agent::run_copilot(&intent).await {
+                    Ok(c) => c,
                     Err(e) => {
                         eprintln!("Copilot error: {}", e);
-                        std::process::exit(1);
+                        process::exit(1);
                     }
+                };
+
+                // ── Safety gate ─────────────────────────────────
+                if !confirm_execution(&command) {
+                    println!("操作已取消");
+                    process::exit(0);
                 }
+
+                // ── Native shell execution ──────────────────────
+                let status = execute_shell(&command);
+                process::exit(status.code().unwrap_or(1));
             }
         }
         None => {
@@ -97,16 +107,49 @@ async fn main() {
                         agent::run_diagnosis(ctx, cli.max_iterations).await
                     {
                         eprintln!("Fatal error: {}", e);
-                        std::process::exit(1);
+                        process::exit(1);
                     }
                 }
                 None => {
                     println!(
                         "当前无失败命令上下文。请使用 'tb <需求描述>' 开启 Copilot 模式。"
                     );
-                    std::process::exit(0);
+                    process::exit(0);
                 }
             }
         }
     }
+}
+
+// ── Copilot helpers ──────────────────────────────────────────────────
+
+/// Display the generated command and ask the user for execution
+/// authorization via `dialoguer::Confirm`.  Returns `true` on `y`.
+fn confirm_execution(command: &str) -> bool {
+    println!();
+    println!("🤖 [TBug] 智能体为您生成的系统命令如下：");
+    println!("👉 {}", command);
+    println!();
+    println!("⚠️  警告：该命令将直接在您的宿主操作系统中运行！");
+    println!();
+
+    dialoguer::Confirm::new()
+        .with_prompt("是否授权自动运行该命令?")
+        .default(false)
+        .interact()
+        .unwrap_or(false)
+}
+
+/// Run `cmd` under the user's login shell (`$SHELL` or `sh` fallback)
+/// with `-c`, inheriting stdout and stderr so native ANSI colors,
+/// progress bars, and error messages pass through untouched.
+fn execute_shell(cmd: &str) -> std::process::ExitStatus {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+    Command::new(&shell)
+        .arg("-c")
+        .arg(cmd)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .expect("Failed to execute command")
 }
