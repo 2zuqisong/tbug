@@ -29,6 +29,10 @@ struct Cli {
     #[arg(short = 'n', long, default_value = "10")]
     max_iterations: usize,
 
+    /// Override the default LLM model (e.g. "deepseek-chat", "deepseek-reasoner").
+    #[arg(short = 'm', long)]
+    model: Option<String>,
+
     #[command(subcommand)]
     subcommand: Option<Commands>,
 }
@@ -78,6 +82,7 @@ async fn main() {
                     args: vec![],
                     max_iterations: cli.max_iterations,
                     language: cfg.language.clone(),
+                    model: cli.model.clone(),
                 })
                 .await
                 {
@@ -91,7 +96,7 @@ async fn main() {
                 } else {
                     format!("{} {}", cmd, cli.args.join(" "))
                 };
-                let command = match agent::run_copilot(&intent, &cfg.language).await {
+                let command = match agent::run_copilot(&intent, &cfg.language, cli.model.as_deref()).await {
                     Ok(c) => c,
                     Err(e) => {
                         eprintln!("Copilot error: {}", e);
@@ -115,6 +120,7 @@ async fn main() {
                         last_cmd: cmd,
                         error_text: integration::read_last_error(),
                         language: cfg.language.clone(),
+                        model: cli.model.clone(),
                     };
                     if let Err(e) =
                         agent::run_diagnosis(ctx, cli.max_iterations).await

@@ -23,6 +23,8 @@ pub struct AgentOptions {
     pub max_iterations: usize,
     /// UI language: `"zh"` or `"en"`.
     pub language: String,
+    /// Override the default LLM model.
+    pub model: Option<String>,
 }
 
 /// Context collected by the bare-`tb` diagnosis flow.
@@ -33,6 +35,8 @@ pub struct DiagnosisContext {
     pub error_text: String,
     /// UI language: `"zh"` or `"en"`.
     pub language: String,
+    /// Override the default LLM model.
+    pub model: Option<String>,
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -179,6 +183,7 @@ async fn run_react_loop(
     working_dir: Option<String>,
     max_iterations: usize,
     language: &str,
+    model: Option<String>,
 ) -> Result<()> {
     let cfg = config::AppConfig {
         language: language.to_string(),
@@ -187,13 +192,16 @@ async fn run_react_loop(
     for i in 0..max_iterations {
         print_separator(&format!("Agent iteration {}/{}", i + 1, max_iterations));
 
+        let llm_opts = ChatOptions {
+            tools: Some(get_tool_defs()),
+            model: model.clone(),
+            ..Default::default()
+        };
+
         let response = client::get_default_client()
             .chat_stream(
                 &messages,
-                Some(&ChatOptions {
-                    tools: Some(get_tool_defs()),
-                    ..Default::default()
-                }),
+                Some(&llm_opts),
                 |event| match event {
                     ChatStreamEvent::Content { delta } => print!("{}", delta),
                     ChatStreamEvent::Thinking { delta } => print!("{}", delta),
@@ -304,6 +312,7 @@ pub async fn run_agent(options: AgentOptions) -> Result<()> {
         command,
         args,
         max_iterations,
+        model,
         ..
     } = options;
 
@@ -338,7 +347,7 @@ pub async fn run_agent(options: AgentOptions) -> Result<()> {
         ChatMessage::user(&build_user_message(&command, &args, &pty_result.output, 0)),
     ];
 
-    run_react_loop(messages, command, args, working_dir, max_iterations, &language).await
+    run_react_loop(messages, command, args, working_dir, max_iterations, &language, model).await
 }
 
 /// Entry point for bare `tb` (diagnosis mode).
@@ -347,6 +356,7 @@ pub async fn run_diagnosis(ctx: DiagnosisContext, max_iterations: usize) -> Resu
         language: ctx.language.clone(),
     };
     let language = ctx.language.clone();
+    let model = ctx.model.clone();
 
     let (command, args) = parse_command_line(&ctx.last_cmd);
 
@@ -368,12 +378,12 @@ pub async fn run_diagnosis(ctx: DiagnosisContext, max_iterations: usize) -> Resu
         ChatMessage::user(&prompt),
     ];
 
-    run_react_loop(messages, command, args, working_dir, max_iterations, &language).await
+    run_react_loop(messages, command, args, working_dir, max_iterations, &language, model).await
 }
 
 /// Copilot mode: translate a natural-language intent into a clean shell
 /// command using a strict one-shot LLM call.
-pub async fn run_copilot(intent: &str, language: &str) -> Result<String> {
+pub async fn run_copilot(intent: &str, language: &str, model: Option<&str>) -> Result<String> {
     let cfg = config::AppConfig {
         language: language.to_string(),
     };
@@ -396,10 +406,15 @@ pub async fn run_copilot(intent: &str, language: &str) -> Result<String> {
 
     let _ = cfg; // used if we add more language-specific behaviour
 
+    let copilot_opts = ChatOptions {
+        model: model.map(String::from),
+        ..Default::default()
+    };
+
     let response = client::get_default_client()
         .chat_stream(
             &messages,
-            None,
+            Some(&copilot_opts),
             |_| {}, // silent — only interested in the final content
         )
         .await?;
