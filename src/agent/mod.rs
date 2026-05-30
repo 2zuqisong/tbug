@@ -215,18 +215,13 @@ async fn run_react_loop(
             name: None,
         };
 
-        let has_tool_calls = response.tool_calls.as_ref()
-            .map_or(false, |tcs| !tcs.is_empty());
-
-        if has_tool_calls {
-            let tcs = response.tool_calls.as_ref().unwrap();
+        if let Some(tcs) = response.tool_calls.as_ref().filter(|t| !t.is_empty()) {
             assistant_msg.tool_calls = Some(tool_info_to_tool_calls(tcs));
         }
         messages.push(assistant_msg);
 
         // ── Execute tool calls ─────────────────────────────────
-        if has_tool_calls {
-            let tcs = response.tool_calls.as_ref().unwrap();
+        if let Some(tcs) = response.tool_calls.as_ref().filter(|t| !t.is_empty()) {
             for tc in tcs {
                 println!("\n  🔧 {}", tc.name);
 

@@ -178,11 +178,17 @@ fn confirm_execution(command: &str, cfg: &config::AppConfig) -> bool {
 
 fn execute_shell(cmd: &str) -> std::process::ExitStatus {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
-    Command::new(&shell)
+    match Command::new(&shell)
         .arg("-c")
         .arg(cmd)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
-        .expect("Failed to execute command")
+    {
+        Ok(status) => status,
+        Err(e) => {
+            eprintln!("Failed to execute command via {}: {}", shell, e);
+            process::exit(1);
+        }
+    }
 }
