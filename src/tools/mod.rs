@@ -12,6 +12,8 @@ pub fn get_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         file_tools::view_file_definition(),
         file_tools::patch_file_definition(),
+        file_tools::list_files_definition(),
+        file_tools::search_content_definition(),
     ]
 }
 
@@ -23,8 +25,10 @@ pub async fn execute_tool(name: &str, args: &serde_json::Value) -> ToolResult {
     match name {
         "view_file" => file_tools::view_file(args).await,
         "patch_file" => file_tools::patch_file(args).await,
+        "list_files" => file_tools::list_files(args).await,
+        "search_content" => file_tools::search_content(args).await,
         other => ToolResult::err(format!(
-            "Unknown tool: \"{}\". Available: view_file, patch_file",
+            "Unknown tool: \"{}\". Available: view_file, patch_file, list_files, search_content",
             other
         )),
     }
@@ -62,11 +66,13 @@ mod tests {
     }
 
     #[test]
-    fn get_tool_definitions_returns_two_tools() {
+    fn get_tool_definitions_returns_four_tools() {
         let defs = get_tool_definitions();
-        assert_eq!(defs.len(), 2);
+        assert_eq!(defs.len(), 4);
         let names: Vec<&str> = defs.iter().map(|d| d.function.name.as_str()).collect();
         assert!(names.contains(&"view_file"));
         assert!(names.contains(&"patch_file"));
+        assert!(names.contains(&"list_files"));
+        assert!(names.contains(&"search_content"));
     }
 }

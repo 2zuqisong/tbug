@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::client::ToolDefinition;
 use crate::utils::diff::apply_delta;
 
@@ -167,6 +169,307 @@ pub async fn patch_file(args: &serde_json::Value) -> ToolResult {
             join_err
         )),
     }
+}
+
+// ── list_files ──────────────────────────────────────────────────────
+
+/// JSON Schema definition for `list_files`.
+pub fn list_files_definition() -> ToolDefinition {
+    ToolDefinition::new(
+        "list_files",
+        "List files and directories at the given path. Returns entries one per line with \
+         [DIR] or [FILE] prefix. Supports optional glob pattern filtering.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory path to list (relative or absolute). Defaults to '.'."
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Optional glob pattern to filter entries (e.g. \"*.rs\", \"**/*.toml\")."
+                }
+            },
+            "required": []
+        }),
+    )
+}
+
+/// Handler for `list_files`.
+pub async fn list_files(args: &serde_json::Value) -> ToolResult {
+    let dir = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .filter(|p| !p.is_empty())
+        .unwrap_or(".");
+
+    let pattern = args
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .filter(|p| !p.is_empty());
+
+    let read_dir = match tokio::fs::read_dir(dir).await {
+        Ok(rd) => rd,
+        Err(e) => return ToolResult::err(format!("Error listing \"{}\": {}", dir, e)),
+    };
+
+    let mut entries: Vec<String> = Vec::new();
+    use tokio_stream::StreamExt;
+    let mut dir_stream = tokio_stream::wrappers::ReadDirStream::new(read_dir);
+    while let Some(entry) = dir_stream.next().await {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+
+        // Apply pattern filter if provided
+        if let Some(pat) = pattern {
+            if !glob_match(pat, &name) {
+                continue;
+            }
+        }
+
+        let file_type = match entry.file_type().await {
+            Ok(ft) if ft.is_dir() => "[DIR] ",
+            Ok(ft) if ft.is_symlink() => "[LNK] ",
+            _ => "[FILE]",
+        };
+        entries.push(format!("{} {}", file_type, name));
+    }
+    entries.sort();
+
+    if entries.is_empty() {
+        ToolResult::ok(format!("(empty directory: {})", dir))
+    } else {
+        ToolResult::ok(entries.join("\n"))
+    }
+}
+
+/// Minimal glob matcher supporting `*` and `**` patterns.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    if pattern.contains('*') {
+        let regex = glob_to_regex(pattern);
+        regex.is_match(name)
+    } else {
+        // Literal substring match
+        name.contains(pattern)
+    }
+}
+
+fn glob_to_regex(pattern: &str) -> regex::Regex {
+    // Escape regex special chars except * and ?
+    let mut escaped = String::with_capacity(pattern.len() * 2);
+    for ch in pattern.chars() {
+        match ch {
+            '*' => escaped.push_str(".*"),
+            '?' => escaped.push('.'),
+            '.' | '+' | '(' | ')' | '|' | '^' | '$' | '{' | '}' | '[' | ']' | '\\' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+    regex::Regex::new(&format!("^{}$", escaped)).unwrap_or_else(|_| regex::Regex::new(".*").unwrap())
+}
+
+// ── search_content ──────────────────────────────────────────────────
+
+/// JSON Schema definition for `search_content`.
+pub fn search_content_definition() -> ToolDefinition {
+    ToolDefinition::new(
+        "search_content",
+        "Search for a literal string or regex pattern in files under a directory. \
+         Returns matching lines with file path, line number, and content. \
+         Accepts an optional glob pattern to limit which files are searched.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "The text or regex pattern to search for."
+                },
+                "is_regex": {
+                    "type": "boolean",
+                    "description": "Set to true to treat pattern as a regex. Defaults to false (literal search)."
+                },
+                "file_pattern": {
+                    "type": "string",
+                    "description": "Optional glob to restrict which files are searched (e.g. \"*.rs\", \"*.toml\")."
+                },
+                "directory": {
+                    "type": "string",
+                    "description": "Root directory for the search. Defaults to '.' (the project root)."
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of matching lines to return. Defaults to 50."
+                }
+            },
+            "required": ["pattern"]
+        }),
+    )
+}
+
+/// Handler for `search_content`.
+pub async fn search_content(args: &serde_json::Value) -> ToolResult {
+    let pattern = match args.get("pattern").and_then(|v| v.as_str()) {
+        Some(p) if !p.is_empty() => p,
+        _ => return ToolResult::err("Error: \"pattern\" parameter is required."),
+    };
+
+    let is_regex = args
+        .get("is_regex")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let file_pattern = args
+        .get("file_pattern")
+        .and_then(|v| v.as_str())
+        .filter(|p| !p.is_empty());
+
+    let directory = args
+        .get("directory")
+        .and_then(|v| v.as_str())
+        .filter(|d| !d.is_empty())
+        .unwrap_or(".");
+
+    let max_results = args
+        .get("max_results")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(50) as usize;
+
+    // Compile the matcher
+    let compiled: Box<dyn Fn(&str) -> bool> = if is_regex {
+        match regex::Regex::new(pattern) {
+            Ok(re) => Box::new(move |line: &str| re.is_match(line)),
+            Err(e) => return ToolResult::err(format!("Invalid regex pattern: {}", e)),
+        }
+    } else {
+        let pat = pattern.to_string();
+        Box::new(move |line: &str| line.contains(&pat))
+    };
+
+    let mut results: Vec<String> = Vec::new();
+    let mut count = 0usize;
+
+    if let Err(e) = walk_and_search(
+        Path::new(directory),
+        &compiled,
+        file_pattern,
+        &mut results,
+        &mut count,
+        max_results,
+    )
+    .await
+    {
+        return ToolResult::err(format!("Error searching: {}", e));
+    }
+
+    if results.is_empty() {
+        ToolResult::ok(format!(
+            "No matches found for \"{}\" in \"{}\".",
+            pattern, directory
+        ))
+    } else {
+        let suffix = if count > max_results {
+            format!("\n... ({} total matches, showing first {})", count, max_results)
+        } else {
+            String::new()
+        };
+        ToolResult::ok(format!("{}{}", results.join("\n"), suffix))
+    }
+}
+
+/// Recursively walk a directory, searching files for matching lines.
+async fn walk_and_search(
+    dir: &Path,
+    matcher: &dyn Fn(&str) -> bool,
+    file_pattern: Option<&str>,
+    results: &mut Vec<String>,
+    count: &mut usize,
+    max_results: usize,
+) -> Result<(), String> {
+    if *count >= max_results {
+        return Ok(());
+    }
+
+    let read_dir = match tokio::fs::read_dir(dir).await {
+        Ok(rd) => rd,
+        Err(e) => return Err(format!("Failed to read directory \"{}\": {}", dir.display(), e)),
+    };
+
+    use tokio_stream::StreamExt;
+    let mut dir_stream = tokio_stream::wrappers::ReadDirStream::new(read_dir);
+    while let Some(entry) = dir_stream.next().await {
+        if *count >= max_results {
+            break;
+        }
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+
+        // Skip hidden directories and common non-source dirs
+        if name.starts_with('.') || name == "target" || name == "node_modules" {
+            continue;
+        }
+
+        let file_type = match entry.file_type().await {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+
+        if file_type.is_dir() {
+            Box::pin(walk_and_search(
+                &path,
+                matcher,
+                file_pattern,
+                results,
+                count,
+                max_results,
+            ))
+            .await?;
+        } else if file_type.is_file() {
+            // Apply file pattern filter
+            if let Some(pat) = file_pattern {
+                if !glob_match(pat, &name) {
+                    continue;
+                }
+            }
+
+            match tokio::fs::read_to_string(&path).await {
+                Ok(content) => {
+                    for (line_no, line) in content.lines().enumerate() {
+                        if *count >= max_results {
+                            break;
+                        }
+                        if matcher(line) {
+                            let display_path = path.to_string_lossy();
+                            let truncated = if line.len() > 200 {
+                                format!("{}...", &line[..200])
+                            } else {
+                                line.to_string()
+                            };
+                            results.push(format!(
+                                "{}:{}: {}",
+                                display_path,
+                                line_no + 1,
+                                truncated
+                            ));
+                            *count += 1;
+                        }
+                    }
+                }
+                Err(_) => continue, // skip binary / unreadable files
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
