@@ -339,17 +339,86 @@ pub async fn run_copilot(intent: &str, language: &str) -> Result<String> {
 
     let raw = response.content.trim().to_string();
 
-    // Strip common markdown fence leftovers in case the model disobeyed.
-    let cleaned = raw
-        .strip_prefix("```bash")
-        .or_else(|| raw.strip_prefix("```sh"))
-        .or_else(|| raw.strip_prefix("```shell"))
-        .or_else(|| raw.strip_prefix("```"))
-        .unwrap_or(&raw)
-        .strip_suffix("```")
-        .unwrap_or(&raw)
-        .trim()
-        .to_string();
+    // Strip surrounding markdown code fences (```bash ... ``` etc.) in case
+    // the model disobeyed the strict output rule.  Handles leading / trailing
+    // whitespace and fences that span multiple lines.
+    let cleaned = strip_markdown_fence(&raw);
 
     Ok(cleaned)
+}
+
+/// Remove a surrounding markdown code fence from `text` if one exists.
+///
+/// Handles ` ```bash\n...\n``` `, ` ```sh\n...\n``` `, ` ```\n...\n``` `,
+/// and also the degenerate ` ``` ` on its own.
+fn strip_markdown_fence(text: &str) -> String {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("```") {
+        return trimmed.to_string();
+    }
+    // Find end of opening fence line
+    let rest = match trimmed.find('\n') {
+        Some(pos) => &trimmed[pos + 1..],
+        None => {
+            // "```cmd" or "```" — strip leading ```, then trailing ``` if present
+            let inner = &trimmed[3..];
+            return inner.strip_suffix("```").unwrap_or(inner).trim().to_string();
+        }
+    };
+    // Strip closing fence if present
+    let body = if rest.ends_with("```") {
+        rest[..rest.len() - 3].trim()
+    } else {
+        rest.trim()
+    };
+    body.to_string()
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_fence_bash_block() {
+        assert_eq!(strip_markdown_fence("```bash\nls\n```"), "ls");
+    }
+
+    #[test]
+    fn strip_fence_sh_block() {
+        assert_eq!(strip_markdown_fence("```sh\nfuser -k 8080/tcp\n```"), "fuser -k 8080/tcp");
+    }
+
+    #[test]
+    fn strip_fence_plain_block() {
+        assert_eq!(strip_markdown_fence("```\nls -la\n```"), "ls -la");
+    }
+
+    #[test]
+    fn strip_fence_with_surrounding_whitespace() {
+        assert_eq!(strip_markdown_fence("\n  ```bash\n  ls\n  ```  \n"), "ls");
+    }
+
+    #[test]
+    fn strip_fence_no_fence_passthrough() {
+        assert_eq!(strip_markdown_fence("ls -la"), "ls -la");
+    }
+
+    #[test]
+    fn strip_fence_lone_backticks() {
+        assert_eq!(strip_markdown_fence("```"), "");
+    }
+
+    #[test]
+    fn strip_fence_single_line_with_backticks() {
+        // Corner: backtick fence on one line with no newline
+        assert_eq!(strip_markdown_fence("```echo hello```"), "echo hello");
+    }
+
+    #[test]
+    fn strip_fence_no_closing_fence() {
+        // Model forgot closing ``` — body still returned
+        assert_eq!(strip_markdown_fence("```bash\nls"), "ls");
+    }
 }
