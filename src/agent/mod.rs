@@ -56,12 +56,84 @@ fn build_user_message(command: &str, args: &[String], output: &str, iteration: u
     }
 }
 
-/// Crude shell-parse: first word is the command, rest are args.
+/// Shell-aware command-line parser. Respects single quotes, double quotes,
+/// and backslash escapes within double quotes.
+///
+/// Returns `(command, args)` where `command` is the first word and `args` are
+/// the rest.
 fn parse_command_line(line: &str) -> (String, Vec<String>) {
-    let mut parts = line.split_whitespace();
-    let cmd = parts.next().unwrap_or("").to_string();
-    let args: Vec<String> = parts.map(|s| s.to_string()).collect();
+    let tokens = shell_split(line);
+    if tokens.is_empty() {
+        return (String::new(), vec![]);
+    }
+    let mut iter = tokens.into_iter();
+    let cmd = iter.next().unwrap_or_default();
+    let args: Vec<String> = iter.collect();
     (cmd, args)
+}
+
+/// Split a command line into tokens, respecting shell quoting rules.
+fn shell_split(input: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let chars: Vec<char> = input.chars().collect();
+    let len = chars.len();
+    let mut i = 0usize;
+
+    while i < len {
+        match chars[i] {
+            ' ' | '\t' | '\n' => {
+                // Flush current token on whitespace
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+                i += 1;
+            }
+            '\'' => {
+                // Single-quoted: everything until closing ' is literal
+                i += 1; // skip opening '
+                while i < len && chars[i] != '\'' {
+                    current.push(chars[i]);
+                    i += 1;
+                }
+                i += 1; // skip closing ' (or past end if unclosed)
+            }
+            '"' => {
+                // Double-quoted: handle backslash escapes
+                i += 1; // skip opening "
+                while i < len && chars[i] != '"' {
+                    if chars[i] == '\\' && i + 1 < len {
+                        // Backslash escape: next char literal
+                        i += 1;
+                        current.push(chars[i]);
+                    } else {
+                        current.push(chars[i]);
+                    }
+                    i += 1;
+                }
+                i += 1; // skip closing "
+            }
+            '\\' => {
+                // Unquoted backslash: escape next char
+                if i + 1 < len {
+                    i += 1;
+                    current.push(chars[i]);
+                }
+                i += 1;
+            }
+            _ => {
+                current.push(chars[i]);
+                i += 1;
+            }
+        }
+    }
+
+    // Flush remaining token
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    tokens
 }
 
 fn print_separator(label: &str) {
@@ -420,5 +492,84 @@ mod tests {
     fn strip_fence_no_closing_fence() {
         // Model forgot closing ``` — body still returned
         assert_eq!(strip_markdown_fence("```bash\nls"), "ls");
+    }
+
+    // ── shell_split ─────────────────────────────────────────────
+
+    #[test]
+    fn shell_split_simple() {
+        assert_eq!(shell_split("ls -la"), vec!["ls", "-la"]);
+    }
+
+    #[test]
+    fn shell_split_single_quotes() {
+        assert_eq!(
+            shell_split("echo 'hello world'"),
+            vec!["echo", "hello world"]
+        );
+    }
+
+    #[test]
+    fn shell_split_double_quotes() {
+        assert_eq!(
+            shell_split(r#"cargo build --manifest-path "path/with spaces/Cargo.toml""#),
+            vec!["cargo", "build", "--manifest-path", "path/with spaces/Cargo.toml"]
+        );
+    }
+
+    #[test]
+    fn shell_split_mixed_quotes() {
+        assert_eq!(
+            shell_split(r#"echo "it's a test" 'and "another"' "#),
+            vec!["echo", "it's a test", "and \"another\""]
+        );
+    }
+
+    #[test]
+    fn shell_split_backslash_escape_in_double_quotes() {
+        assert_eq!(
+            shell_split(r#"echo "hello \"world\"""#),
+            vec!["echo", "hello \"world\""]
+        );
+    }
+
+    #[test]
+    fn shell_split_empty() {
+        assert!(shell_split("   ").is_empty());
+    }
+
+    #[test]
+    fn shell_split_trailing_whitespace() {
+        assert_eq!(shell_split("cargo build  "), vec!["cargo", "build"]);
+    }
+
+    #[test]
+    fn shell_split_unquoted_backslash_escape() {
+        assert_eq!(shell_split(r"echo hello\ world"), vec!["echo", "hello world"]);
+    }
+
+    // ── parse_command_line ──────────────────────────────────────
+
+    #[test]
+    fn parse_cmd_empty() {
+        let (cmd, args) = parse_command_line("");
+        assert_eq!(cmd, "");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn parse_cmd_simple() {
+        let (cmd, args) = parse_command_line("cargo build --release");
+        assert_eq!(cmd, "cargo");
+        assert_eq!(args, vec!["build", "--release"]);
+    }
+
+    #[test]
+    fn parse_cmd_multiple_args() {
+        let (cmd, args) = parse_command_line(
+            r#"cargo build --manifest-path "path/with spaces/Cargo.toml""#
+        );
+        assert_eq!(cmd, "cargo");
+        assert_eq!(args, vec!["build", "--manifest-path", "path/with spaces/Cargo.toml"]);
     }
 }
