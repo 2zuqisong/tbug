@@ -384,10 +384,6 @@ pub async fn run_diagnosis(ctx: DiagnosisContext, max_iterations: usize) -> Resu
 /// Copilot mode: translate a natural-language intent into a clean shell
 /// command using a strict one-shot LLM call.
 pub async fn run_copilot(intent: &str, language: &str, model: Option<&str>) -> Result<String> {
-    let cfg = config::AppConfig {
-        language: language.to_string(),
-    };
-
     // Append language constraint to the copilot system prompt.
     let copilot_prompt = if language == "en" {
         format!(
@@ -403,8 +399,6 @@ pub async fn run_copilot(intent: &str, language: &str, model: Option<&str>) -> R
         ChatMessage::system(&copilot_prompt),
         ChatMessage::user(intent),
     ];
-
-    let _ = cfg; // used if we add more language-specific behaviour
 
     let copilot_opts = ChatOptions {
         model: model.map(String::from),

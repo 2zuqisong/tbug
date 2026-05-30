@@ -150,6 +150,11 @@ fn run_config(cfg: &config::AppConfig) {
         .unwrap_or(default_idx);
 
     let new_lang = if selection == 1 { "en" } else { "zh" };
+    if new_lang == cfg.language {
+        println!("✔ {}", cfg.msg_config_updated());
+        return;
+    }
+
     let mut updated = cfg.clone();
     updated.language = new_lang.to_string();
 
